@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>祖玛 Zuma - 网页版</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:radial-gradient(ellipse at center,#2b1d0e,#120b05 70%,#000);color:#e8d5a3;font-family:"Microsoft YaHei","PingFang SC",sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh}
+  h1{margin:14px 0 4px;font-size:30px;letter-spacing:6px;color:#ffd76a;text-shadow:0 0 12px #b8641a}
+  #hud{display:flex;gap:26px;margin:8px 0 10px;font-size:15px;background:rgba(0,0,0,.45);padding:7px 22px;border-radius:24px;border:1px solid #6b4a1d}
+  #hud b{color:#ffd76a}
+  #wrap{position:relative}
+  canvas{background:#0a0603;border:3px solid #6b4a1d;border-radius:10px;box-shadow:0 0 30px rgba(255,160,40,.25);cursor:crosshair;display:block;touch-action:none}
+  #overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(0,0,0,.78);border-radius:10px;text-align:center;padding:0 30px}
+  #overlay h2{font-size:38px;color:#ffd76a;text-shadow:0 0 14px #b8641a}
+  #overlay p{font-size:15px;line-height:1.9;max-width:460px}
+  #overlay button{font-size:18px;padding:10px 34px;border-radius:24px;cursor:pointer;background:linear-gradient(#ffce6a,#e08c22);border:1px solid #8a5a12;color:#3a2000;font-weight:bold}
+  #overlay button:hover{filter:brightness(1.12)}
+  .hidden{display:none!important}
+  #tips{margin:10px 0 18px;font-size:13px;color:#a58c5e}
+</style>
+</head>
+<body>
+<h1>祖 玛</h1>
+<div id="hud"><span>得分 <b id="score">0</b></span><span>生命 <b id="lives">3</b></span><span>连击 <b id="combo">x1</b></span><span>下一球 <b id="next">●</b></span></div>
+<div id="wrap">
+<canvas id="game" width="900" height="600"></canvas>
+<div id="overlay">
+<h2 id="ovTitle">祖 玛</h2>
+<p id="ovText">青蛙吐球消除轨道上的彩球，别让它们掉进骷髅洞！<br>🖱 移动瞄准，<b>点击 / 空格</b> 发射，<b>右键</b> 或 <b>R</b> 换球。<br>三连同色即消除，连锁塌陷可获得更高连击分！</p>
+<button id="btnStart">开始游戏</button>
+<button id="btnAgain" class="hidden">再来一局</button>
+</div>
+</div>
+<div id="tips">目标：清空整条轨道的彩球即可过关，共 3 关，难度递增。</div>
+<script>
+const cv=document.getElementById('game'),ctx=cv.getContext('2d');
+const W=900,H=600,COLORS=['#e23b3b','#2f7fe2','#3fbf4f','#e8c624','#b34ce0'],R=14,GAP=27;
+const $=id=>document.getElementById(id);
+function cr(p0,p1,p2,p3,t){const t2=t*t,t3=t2*t;return[.5*(2*p1[0]+(-p0[0]+p2[0])*t+(2*p0[0]-5*p1[0]+4*p2[0]-p3[0])*t2+(-p0[0]+3*p1[0]-3*p2[0]+p3[0])*t3),.5*(2*p1[1]+(-p0[1]+p2[1])*t+(2*p0[1]-5*p1[1]+4*p2[1]-p3[1])*t2+(-p0[1]+3*p1[1]-3*p2[1]+p3[1])*t3)]}
+function buildPath(c){const p=[];for(let i=0;i<c.length-1;i++){const a=c[Math.max(0,i-1)],b=c[i],d=c[i+1],e=c[Math.min(c.length-1,i+2)];for(let s=0;s<18;s++)p.push(cr(a,b,d,e,s/18))}p.push(c[c.length-1]);return p}
+const LEVELS=[
+{ctl:[[60,80],[240,60],[500,120],[760,80],[840,220],[700,330],[430,300],[170,340],[90,470],[320,540],[640,520],[830,470],[850,560]],speed:14,spawn:1.1,balls:55},
+{ctl:[[70,540],[70,380],[230,330],[470,380],[700,330],[830,220],[700,110],[450,90],[210,140],[130,260],[300,240],[560,240],[760,300],[840,430],[700,540],[420,560],[180,500],[150,420]],speed:17,spawn:.9,balls:70},
+{ctl:[[450,50],[740,70],[850,240],[760,420],[520,470],[260,450],[90,340],[160,160],[380,130],[560,220],[520,350],[330,380],[260,500],[480,560],[740,540],[850,430],[840,300]],speed:20,spawn:.78,balls:85}];
+LEVELS.forEach(l=>{l.path=buildPath(l.ctl);l.len=l.path.length});
+let path,pathLen,li,speed,spawnInt,toSpawn,chain,bullets,pops,particles,frog,aim,curC,nextC,score,lives,combo,comboT,state='menu',spawnT,shake;
+function rnd(n){return Math.floor(Math.random()*n)}
+function sp(d){d=Math.max(0,Math.min(pathLen-1.001,d));const i=d|0,t=d-i,a=path[i],b=path[i+1];return[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t]}
+function burst(x,y,c){for(let i=0;i<10;i++){const a=Math.random()*6.28,v=40+Math.random()*120;particles.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,t:0,c})}}
+function initLevel(i){
+  li=i;const L=LEVELS[i];path=L.path;pathLen=L.len;speed=L.speed;spawnInt=L.spawn;toSpawn=L.balls;
+  chain=[];bullets=[];pops=[];particles=[];spawnT=0;shake=0;
+  frog={x:path[0][0]<W/2?W-70:70,y:H-70};
+  aim={x:W/2,y:100};
+  curC=nextC!==undefined?nextC:rnd(5);nextC=rnd(5);
+  combo=1;comboT=0;
+}
+function startGame(){score=0;lives=3;nextC=rnd(5);initLevel(0);state='play';$('overlay').classList.add('hidden');hud()}
+function loseLife(){lives--;shake=14;if(lives<=0)endGame(false);else initLevel(li);hud()}
+function endGame(won){state='over';$('ovTitle').textContent=won?'🎉 通关！':'💀 游戏结束';
+  $('ovText').innerHTML=won?`恭喜清空全部轨道！<br>最终得分：<b style="color:#ffd76a">${score}</b>`:`彩球掉进了骷髅洞…<br>最终得分：<b style="color:#ffd76a">${score}</b>（第 ${li+1} 关）`;
+  $('btnStart').classList.add('hidden');$('btnAgain').classList.remove('hidden');$('overlay').classList.remove('hidden')}
+function hud(){$('score').textContent=score;$('lives').textContent=lives;$('combo').textContent='x'+combo;const n=$('next');n.style.color=COLORS[nextC]}
+function updateChain(dt){
+  spawnT-=dt;
+  if(toSpawn>0&&spawnT<=0&&(!chain.length||chain[chain.length-1].d>=GAP*0.9)){
+    chain.push({d:0,c:rnd(5)});toSpawn--;spawnT=spawnInt;
+  }
+  let dead=false;
+  for(let i=0;i<chain.length;i++){
+    const b=chain[i];
+    if(i===0)b.d+=speed*dt;
+    else{const t=chain[i-1].d-GAP;if(b.d<t)b.d=Math.min(t,b.d+speed*dt*1.6);else b.d=t}
+    if(b.d>pathLen-8)dead=true;
+  }
+  if(dead)loseLife();
+}
+function checkMatch(idx){
+  if(idx>=chain.length)return;
+  const c=chain[idx].c;let lo=idx,hi=idx;
+  while(lo>0&&chain[lo-1].c===c)lo--;
+  while(hi<chain.length-1&&chain[hi+1].c===c)hi++;
+  const n=hi-lo+1;
+  if(n<3)return;
+  const gain=n*10*combo;
+  score+=gain;
+  const mid=sp(chain[((lo+hi)/2)|0].d);
+  pops.push({x:mid[0],y:mid[1],t:0,txt:'+'+gain,c:COLORS[c]});
+  for(let i=lo;i<=hi;i++){const p=sp(chain[i].d);burst(p[0],p[1],COLORS[chain[i].c])}
+  chain.splice(lo,n);
+  for(let i=lo;i<chain.length;i++)if(i>0&&chain[i].d>chain[i-1].d-GAP)chain[i].d=chain[i-1].d-GAP;
+  combo=comboT>0?Math.min(combo+1,8):1;comboT=3;
+  hud();
+  if(lo<chain.length)checkMatch(lo); // 连锁塌陷
+  if(!chain.length&&toSpawn<=0){
+    if(li<LEVELS.length-1){pops.push({x:W/2,y:H/2,t:-1.4,txt:'🎉 第 '+(li+2)+' 关！',c:'#ffd76a'});setTimeout(()=>initLevel(li+1),1500)}
+    else endGame(true);
+  }
+}
+function insertBall(bx,by,c){
+  let idx=-1,best=R+9;
+  for(let i=0;i<chain.length;i++){const p=sp(chain[i].d),d=Math.hypot(p[0]-bx,p[1]-by);if(d<best){best=d;idx=i}}
+  if(idx<0)return false;
+  const p=sp(chain[idx].d),t=sp(Math.min(pathLen-1,chain[idx].d+3));
+  const tx=t[0]-p[0],ty=t[1]-p[1],m=Math.hypot(tx,ty)||1;
+  const side=(bx-p[0])*(-ty/m)+(by-p[1])*(tx/m);
+  const at=side>0?idx+1:idx;
+  const nb={d:side>0?chain[idx].d+GAP:chain[idx].d-GAP,c};
+  chain.splice(at,0,nb);
+  // 统一重排：head 在前（d 大）
+  if(side>0){for(let i=chain.length-1;i>at;i--){if(chain[i].d>chain[i-1].d-GAP)chain[i].d=chain[i-1].d-GAP}}
+  else{for(let i=at;i<chain.length;i++)if(i>0&&chain[i].d>chain[i-1].d-GAP)chain[i].d=chain[i-1].d-GAP;
+       if(at>0)chain[at].d=Math.min(chain[at].d,chain[at-1].d-GAP)}
+  checkMatch(at);
+  return true;
+}
+function shoot(){
+  if(state!=='play')return;
+  let dx=aim.x-frog.x,dy=aim.y-frog.y,m=Math.hypot(dx,dy)||1;
+  bullets.push({x:frog.x,y:frog.y,vx:dx/m*640,vy:dy/m*640,c:curC});
+  curC=nextC;nextC=rnd(5);hud();
+}
+function swapColors(){if(state!=='play')return;const t=curC;curC=nextC;nextC=t;hud()}
+
+function update(dt){
+  if(state!=='play')return;
+  updateChain(dt);
+  if(comboT>0){comboT-=dt;if(comboT<=0){combo=1;hud()}}
+  for(let i=bullets.length-1;i>=0;i--){
+    const b=bullets[i];
+    b.x+=b.vx*dt;b.y+=b.vy*dt;
+    if(b.x<-20||b.x>W+20||b.y<-20||b.y>H+20){bullets.splice(i,1);continue}
+    if(chain.length&&insertBall(b.x,b.y,b.c)){bullets.splice(i,1);continue}
+    if(!chain.length){ // 空链时贴到 spawn 附近等待？直接消散
+      bullets.splice(i,1);
+    }
+  }
+  for(let i=pops.length-1;i>=0;i--){pops[i].t+=dt;if(pops[i].t>1.2)pops.splice(i,1)}
+  for(let i=particles.length-1;i>=0;i--){const p=particles[i];p.t+=dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=300*dt;if(p.t>0.7)particles.splice(i,1)}
+  if(shake>0)shake=Math.max(0,shake-40*dt);
+  const headD=chain.length?chain[0].d:0;
+  danger=headD>pathLen*0.72;
+}
+function drawTrack(){
+  ctx.save();
+  ctx.lineCap='round';ctx.lineJoin='round';
+  ctx.strokeStyle='#3a2a14';ctx.lineWidth=44;ctx.beginPath();ctx.moveTo(path[0][0],path[0][1]);
+  for(let i=1;i<pathLen;i+=4)ctx.lineTo(path[i][0],path[i][1]);
+  ctx.lineTo(path[pathLen-1][0],path[pathLen-1][1]);ctx.stroke();
+  ctx.strokeStyle='#1d130a';ctx.lineWidth=32;ctx.stroke();
+  ctx.restore();
+  // 起点 & 骷髅洞
+  const s=path[0],e=path[pathLen-1];
+  ctx.fillStyle='#5a4020';ctx.beginPath();ctx.arc(s[0],s[1],26,0,6.29);ctx.fill();
+  ctx.fillStyle='#000';ctx.beginPath();ctx.arc(s[0],s[1],18,0,6.29);ctx.fill();
+  ctx.fillStyle='#000';ctx.beginPath();ctx.arc(e[0],e[1],30,0,6.29);ctx.fill();
+  ctx.strokeStyle=danger?'#ff4d3d':'#6b4a1d';ctx.lineWidth=4;
+  ctx.beginPath();ctx.arc(e[0],e[1],30,0,6.29);ctx.stroke();
+  // 骷髅
+  ctx.fillStyle=danger?'#ff4d3d':'#cbb98d';
+  ctx.font='26px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('💀',e[0],e[1]+2);
+}
+function drawBall(x,y,c,glow){
+  ctx.save();
+  if(glow){ctx.shadowColor=COLORS[c];ctx.shadowBlur=10}
+  const g=ctx.createRadialGradient(x-4,y-5,2,x,y,R);
+  const col=COLORS[c];
+  g.addColorStop(0,'#fff');g.addColorStop(0.35,col);g.addColorStop(1,'#000');
+  ctx.fillStyle=col;ctx.beginPath();ctx.arc(x,y,R,0,6.29);ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,.75)';ctx.beginPath();ctx.arc(x-4.5,y-5,3.6,0,6.29);ctx.fill();
+  ctx.restore();
+}
+function drawFrog(){
+  const a=Math.atan2(aim.y-frog.y,aim.x-frog.x);
+  ctx.save();ctx.translate(frog.x,frog.y);ctx.rotate(a);
+  // 身体
+  ctx.fillStyle='#3f9e35';ctx.beginPath();ctx.ellipse(0,0,30,24,0,0,6.29);ctx.fill();
+  ctx.fillStyle='#2e7d28';ctx.beginPath();ctx.ellipse(0,6,26,16,0,0,6.29);ctx.fill();
+  // 眼睛
+  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(6,-16,8,0,6.29);ctx.arc(6,16,8,0,6.29);ctx.fill();
+  ctx.fillStyle='#000';ctx.beginPath();ctx.arc(9,-16,4,0,6.29);ctx.arc(9,16,4,0,6.29);ctx.fill();
+  // 口
+  ctx.strokeStyle='#1d4d18';ctx.lineWidth=3;
+  ctx.beginPath();ctx.moveTo(18,-8);ctx.lineTo(30,0);ctx.lineTo(18,8);ctx.stroke();
+  ctx.restore();
+  // 当前球
+  if(state==='play')drawBall(frog.x,frog.y,curC,true);
+  // 瞄准线
+  ctx.save();ctx.strokeStyle='rgba(255,255,255,.25)';ctx.lineWidth=2;ctx.setLineDash([6,8]);
+  ctx.beginPath();ctx.moveTo(frog.x,frog.y);ctx.lineTo(aim.x,aim.y);ctx.stroke();ctx.restore();
+}
+function render(){
+  ctx.save();
+  if(shake>0)ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);
+  ctx.clearRect(-20,-20,W+40,H+40);
+  ctx.fillStyle='#0a0603';ctx.fillRect(-20,-20,W+40,H+40);
+  if(!path){ctx.restore();return}
+  drawTrack();
+  // 轨道球
+  for(let i=chain.length-1;i>=0;i--){const b=chain[i];if(b.d<0)continue;const p=sp(b.d);drawBall(p[0],p[1],b.c,false)}
+  // 弹丸
+  for(const b of bullets)drawBall(b.x,b.y,b.c,true);
+  drawFrog();
+  // 粒子
+  for(const p of particles){ctx.globalAlpha=Math.max(0,1-p.t/0.7);ctx.fillStyle=p.c;ctx.fillRect(p.x-2,p.y-2,4,4)}
+  ctx.globalAlpha=1;
+  // 飘字
+  ctx.textAlign='center';ctx.font='bold 22px sans-serif';
+  for(const p of pops){const k=Math.min(1,p.t<0?1:p.t+0.3);ctx.globalAlpha=p.t<0?0.9:Math.max(0,1-p.t/1.2);
+    ctx.fillStyle=p.c;ctx.fillText(p.txt,p.x,p.y-(p.t>0?p.t*40:0));}
+  ctx.globalAlpha=1;
+  // 关卡标题
+  ctx.fillStyle='rgba(255,215,106,.75)';ctx.font='16px sans-serif';ctx.textAlign='left';
+  ctx.fillText('第 '+(li+1)+' 关 / 3',16,26);
+  ctx.restore();
+}
+
+/* ---------- 输入 ---------- */
+function cvPos(ev){
+  const r=cv.getBoundingClientRect();
+  const t=ev.touches?ev.touches[0]:ev;
+  return{x:(t.clientX-r.left)*(W/r.width),y:(t.clientY-r.top)*(H/r.height)};
+}
+cv.addEventListener('mousemove',e=>{aim=cvPos(e)});
+cv.addEventListener('mousedown',e=>{if(e.button===0){aim=cvPos(e);shoot()}else if(e.button===2)swapColors()});
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+cv.addEventListener('touchstart',e=>{e.preventDefault();aim=cvPos(e)},{passive:false});
+cv.addEventListener('touchmove',e=>{e.preventDefault();aim=cvPos(e)},{passive:false});
+cv.addEventListener('touchend',e=>{e.preventDefault();shoot()},{passive:false});
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){e.preventDefault();shoot()}
+  if(e.code==='KeyR')swapColors();
+});
+$('btnStart').addEventListener('click',startGame);
+$('btnAgain').addEventListener('click',startGame);
+
+/* ---------- 主循环 ---------- */
+path=LEVELS[0].path;pathLen=LEVELS[0].len;li=0;chain=[];bullets=[];pops=[];particles=[];
+score=0;lives=3;curC=0;nextC=1;combo=1;comboT=0;
+frog={x:W-70,y:H-70};aim={x:W/2,y:100};
+let last=performance.now();
+function loop(t){
+  const dt=Math.min(0.033,(t-last)/1000);last=t;
+  update(dt);render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
